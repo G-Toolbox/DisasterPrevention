@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>防災備品ストック管理システム</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-50">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        const { useState, useEffect, useMemo } = React;
+
+        // --- Firebase Modules (CDN) ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, deleteDoc, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+        // --- Firebase Configuration ---
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'disaster-prep-app';
+
+        // --- Simple Icon Component (SVG) ---
+        const Icon = ({ name, className }) => {
+            const icons = {
+                plus: <path d="M12 5v14M5 12h14" />,
+                settings: (
+                    <>
+                        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                    </>
+                ),
+                trash: (
+                    <>
+                        <path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                        <path d="M10 11v6M14 11v6" />
+                    </>
+                ),
+                edit: (
+                    <>
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </>
+                ),
+                x: <path d="M18 6L6 18M6 6l12 12" />,
+                shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />,
+                alert: (
+                    <>
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <path d="M12 9v4M12 17h.01" />
+                    </>
+                ),
+                check: <polyline points="20 6 9 17 4 12" />,
+                calendar: (
+                    <>
+                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                        <line x1="16" y1="2" x2="16" y2="6" />
+                        <line x1="8" y1="2" x2="8" y2="6" />
+                        <line x1="3" y1="10" x2="21" y2="10" />
+                    </>
+                ),
+                package: (
+                    <>
+                        <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
+                        <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                        <line x1="12" y1="22.08" x2="12" y2="12" />
+                    </>
+                ),
+                logout: (
+                    <>
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                        <path d="M16 17l5-5-5-5M21 12H9" />
+                    </>
+                ),
+                lock: (
+                    <>
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </>
+                ),
+                bell: (
+                    <>
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                    </>
+                ),
+                bellOff: (
+                    <>
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0M18.63 13A17.89 17.89 0 0 1 18 8M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14M18 8a6 6 0 0 0-9.33-5"/>
+                        <path d="M2 2l20 20" />
+                    </>
+                )
+            };
+            return (
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                    {icons[name]}
+                </svg>
+            );
+        };
+
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [isAuthenticated, setIsAuthenticated] = useState(false);
+            const [password, setPassword] = useState('');
+            const [savedPassword, setSavedPassword] = useState(null);
+            const [isSettingPassword, setIsSettingPassword] = useState(false);
+            
+            const [items, setItems] = useState([]);
+            const [categories, setCategories] = useState(['飲料水', '食料品', '衛生用品', '生活用品', '医療品']);
+            const [view, setView] = useState('list');
+            const [currentItem, setCurrentItem] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [notifPermission, setNotifPermission] = useState(Notification.permission);
+
+            // --- Auth Setup ---
+            useEffect(() => {
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (err) {
+                        setError("認証に失敗しました。");
+                    }
+                };
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, (u) => {
+                    setUser(u);
+                    if (!u) setLoading(false);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            // --- Data Fetching ---
+            useEffect(() => {
+                if (!user) return;
+                const settingsDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'config');
+                const unsubSettings = onSnapshot(settingsDocRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        if (data.password) setSavedPassword(data.password);
+                        if (data.categories) setCategories(data.categories);
+                    } else {
+                        setIsSettingPassword(true);
+                    }
+                    setLoading(false);
+                });
+                const itemsColRef = collection(db, 'artifacts', appId, 'users', user.uid, 'items');
+                const unsubItems = onSnapshot(itemsColRef, (snapshot) => {
+                    setItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+                });
+                return () => { unsubSettings(); unsubItems(); };
+            }, [user]);
+
+            // --- Notification Logic (2-month threshold) ---
+            const alertItems = useMemo(() => {
+                const now = new Date();
+                return items.filter(item => {
+                    const date = item.checkDate || item.expiryDate;
+                    if (!date) return false;
+                    const target = new Date(date);
+                    const diffMonth = (target.getFullYear() - now.getFullYear()) * 12 + (target.getMonth() - now.getMonth());
+                    return diffMonth <= 2;
+                });
+            }, [items]);
+
+            useEffect(() => {
+                if (isAuthenticated && alertItems.length > 0 && notifPermission === 'granted') {
+                    alertItems.forEach((item, index) => {
+                        if (index >= 5) return;
+                        const date = item.checkDate || item.expiryDate;
+                        const isOverdue = new Date(date) < new Date();
+                        const body = isOverdue 
+                            ? `${item.name} の期限が ${date} に切れています。`
+                            : `${item.name} が ${date} に期限を迎えます。`;
+                        new Notification(isOverdue ? "【期限切れ】アラート" : "【期限間近】アラート", { body });
+                    });
+                }
+            }, [isAuthenticated, alertItems, notifPermission]);
+
+            const requestPermission = async () => setNotifPermission(await Notification.requestPermission());
+
+            // --- Handlers ---
+            const handleLogin = (e) => {
+                e.preventDefault();
+                if (password === savedPassword) setIsAuthenticated(true);
+                else setError("パスワードが正しくありません。");
+            };
+
+            const saveItem = async (e) => {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                const data = {
+                    category: fd.get('category'),
+                    name: fd.get('name'),
+                    quantity: fd.get('quantity') || "1",
+                    replacementDate: fd.get('replacementDate'),
+                    expiryDate: fd.get('expiryDate'),
+                    checkDate: fd.get('checkDate'),
+                    updatedAt: new Date().toISOString()
+                };
+                try {
+                    if (currentItem?.id) await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'items', currentItem.id), data);
+                    else await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'items'), data);
+                    setView('list'); setCurrentItem(null);
+                } catch (err) { setError("保存失敗"); }
+            };
+
+            const getStatusColor = (d) => {
+                if (!d) return 'text-slate-400';
+                const diff = (new Date(d).getFullYear() - new Date().getFullYear()) * 12 + (new Date(d).getMonth() - new Date().getMonth());
+                if (diff < 0) return 'text-red-600 bg-red-50 ring-red-200';
+                if (diff <= 3) return 'text-amber-600 bg-amber-50 ring-amber-200';
+                return 'text-emerald-600 bg-emerald-50 ring-emerald-200';
+            };
+
+            if (loading) return <div className="min-h-screen flex items-center justify-center"><div className="animate-spin rounded-full h-12 w-12 border-t-2 border-blue-600"></div></div>;
+
+            if (!isAuthenticated) return (
+                <div className="min-h-screen flex items-center justify-center p-4">
+                    <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md">
+                        <div className="flex flex-col items-center mb-6">
+                            <div className="bg-blue-100 p-4 rounded-full mb-4"><Icon name="lock" className="text-blue-600" /></div>
+                            <h1 className="text-2xl font-bold">防災備品管理</h1>
+                            <p className="text-slate-500 mt-2">{isSettingPassword ? '初期パスワードを設定' : 'ログインしてください'}</p>
+                        </div>
+                        <form onSubmit={isSettingPassword ? (async (e) => {
+                            e.preventDefault();
+                            await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'config'), { password, categories }, { merge: true });
+                            setIsAuthenticated(true);
+                        }) : handleLogin} className="space-y-4">
+                            <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full px-4 py-3 rounded-lg border focus:ring-2 focus:ring-blue-500 outline-none" placeholder="パスワード" required />
+                            {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+                            <button type="submit" className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg">{isSettingPassword ? '設定して開始' : 'ログイン'}</button>
+                        </form>
+                    </div>
+                </div>
+            );
+
+            return (
+                <div className="min-h-screen pb-24">
+                    <header className="bg-white border-b sticky top-0 z-40 shadow-sm px-4 h-16 flex items-center justify-between">
+                        <div className="flex items-center gap-2"><Icon name="shield" className="text-blue-600" /><h1 className="font-bold">防災備品リスト</h1></div>
+                        <div className="flex items-center gap-2">
+                            <button onClick={requestPermission} className={notifPermission === 'granted' ? 'text-blue-600' : 'text-slate-400'}><Icon name={notifPermission === 'granted' ? 'bell' : 'bellOff'} /></button>
+                            <button onClick={() => setView('categories')}><Icon name="settings" className="text-slate-500" /></button>
+                            <button onClick={() => setIsAuthenticated(false)}><Icon name="logout" className="text-slate-500" /></button>
+                        </div>
+                    </header>
+
+                    <main className="max-w-4xl mx-auto px-4 py-6">
+                        {alertItems.length > 0 && (
+                            <div className="mb-6 bg-red-50 border border-red-100 p-4 rounded-2xl flex items-center gap-3 animate-pulse">
+                                <Icon name="alert" className="text-red-500" />
+                                <div><p className="text-red-800 font-bold">期限切れ・間近が {alertItems.length} 件あります</p></div>
+                            </div>
+                        )}
+
+                        {items.length === 0 ? (
+                            <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-200">
+                                <Icon name="package" className="mx-auto text-slate-200 w-16 h-16" />
+                                <p className="text-slate-400 mt-4">備品を登録しましょう</p>
+                            </div>
+                        ) : (
+                            <div className="space-y-6">
+                                {categories.map(cat => {
+                                    const catItems = items.filter(i => i.category === cat);
+                                    if (catItems.length === 0) return null;
+                                    return (
+                                        <section key={cat} className="space-y-3">
+                                            <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest">{cat}</h2>
+                                            <div className="grid gap-3">
+                                                {catItems.map(item => (
+                                                    <div key={item.id} className="bg-white p-4 rounded-xl shadow-sm border group">
+                                                        <div className="flex justify-between items-start">
+                                                            <div>
+                                                                <div className="flex items-center gap-2">
+                                                                    <h3 className="font-bold text-lg">{item.name}</h3>
+                                                                    <span className="bg-slate-100 text-xs px-2 py-0.5 rounded-full">x {item.quantity}</span>
+                                                                </div>
+                                                                <div className="mt-3 flex flex-wrap gap-4 text-[10px] text-slate-500">
+                                                                    <span className="flex items-center gap-1"><Icon name="calendar" className="w-3 h-3" />入手: {item.replacementDate || '-'}</span>
+                                                                    <span className={`flex items-center gap-1 font-bold ${getStatusColor(item.expiryDate)}`}><Icon name="alert" className="w-3 h-3" />賞味期限: {item.expiryDate || '-'}</span>
+                                                                    <span className={`flex items-center gap-1 font-bold ${getStatusColor(item.checkDate)}`}><Icon name="check" className="w-3 h-3" />次回交換: {item.checkDate || '-'}</span>
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                <button onClick={() => { setCurrentItem(item); setView('edit'); }} className="text-blue-600 p-1"><Icon name="edit" className="w-4 h-4" /></button>
+                                                                <button onClick={async () => { if(confirm('削除しますか？')) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'items', item.id)) }} className="text-red-600 p-1"><Icon name="trash" className="w-4 h-4" /></button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </section>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </main>
+
+                    <button onClick={() => setView('edit')} className="fixed bottom-8 right-8 w-16 h-16 bg-blue-600 text-white rounded-full shadow-2xl flex items-center justify-center hover:scale-105 transition-all"><Icon name="plus" /></button>
+
+                    {view === 'edit' && (
+                        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-2xl w-full max-w-lg overflow-hidden">
+                                <div className="px-6 py-4 bg-slate-50 border-b flex justify-between items-center"><h2 className="font-bold">{currentItem ? '編集' : '追加'}</h2><button onClick={() => setView('list')}><Icon name="x" className="text-slate-400" /></button></div>
+                                <form onSubmit={saveItem} className="p-6 space-y-4">
+                                    <div className="flex gap-4">
+                                        <div className="flex-[3]"><label className="text-xs font-bold text-slate-500">備品名</label><input name="name" defaultValue={currentItem?.name} className="w-full p-2 border rounded-lg" required /></div>
+                                        <div className="flex-[1]"><label className="text-xs font-bold text-slate-500">個数</label><input name="quantity" type="number" defaultValue={currentItem?.quantity || 1} className="w-full p-2 border rounded-lg" /></div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div><label className="text-xs font-bold text-slate-500">入手日</label><input name="replacementDate" type="date" defaultValue={currentItem?.replacementDate} className="w-full p-2 border rounded-lg" /></div>
+                                        <div><label className="text-xs font-bold text-slate-500">賞味期限 (YM)</label><input name="expiryDate" type="month" defaultValue={currentItem?.expiryDate} className="w-full p-2 border rounded-lg" /></div>
+                                    </div>
+                                    <div><label className="text-xs font-bold text-slate-500">次回交換時期目安 (YM)</label><input name="checkDate" type="month" defaultValue={currentItem?.checkDate} className="w-full p-2 border rounded-lg" /></div>
+                                    <div className="pt-4 flex gap-3"><button type="button" onClick={() => setView('list')} className="flex-1 py-2 border rounded-lg">キャンセル</button><button type="submit" className="flex-1 py-2 bg-blue-600 text-white font-bold rounded-lg">保存</button></div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {view === 'categories' && (
+                        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden">
+                                <div className="px-6 py-4 bg-slate-50 border-b flex justify-between items-center"><h2 className="font-bold">カテゴリ設定</h2><button onClick={() => setView('list')}><Icon name="x" className="text-slate-400" /></button></div>
+                                <div className="p-6">
+                                    <textarea id="catInput" defaultValue={categories.join('\n')} className="w-full h-48 p-3 border rounded-lg font-mono text-sm" />
+                                    <button onClick={async () => {
+                                        const list = document.getElementById('catInput').value.split('\n').filter(s => s.trim());
+                                        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'config'), { categories: list }, { merge: true });
+                                        setView('list');
+                                    }} className="w-full mt-4 bg-blue-600 text-white py-2 rounded-lg font-bold">反映する</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
