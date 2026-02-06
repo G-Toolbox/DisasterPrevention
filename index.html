@@ -8,6 +8,18 @@
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        /* JS読み込み前のローディング表示 */
+        #root:empty::before {
+            content: "読み込み中...";
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: #64748b;
+            font-family: sans-serif;
+        }
+    </style>
 </head>
 <body class="bg-slate-50">
     <div id="root"></div>
@@ -20,11 +32,20 @@
         import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, deleteDoc, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
-        // --- Firebase Configuration ---
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+        // --- Safety Check for Configuration ---
+        const getFirebaseConfig = () => {
+            try {
+                if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                    return JSON.parse(__firebase_config);
+                }
+            } catch (e) {
+                console.error("Firebase config parse error:", e);
+            }
+            // GitHub Pagesなどで直接動かす場合は、ここに自分のFirebase設定を貼り付けることも可能です
+            return null; 
+        };
+
+        const config = getFirebaseConfig();
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'disaster-prep-app';
 
         // --- Simple Icon Component (SVG) ---
@@ -120,31 +141,53 @@
             const [error, setError] = useState(null);
             const [notifPermission, setNotifPermission] = useState(Notification.permission);
 
-            // --- Auth Setup ---
+            // --- Firebase Instance Holder ---
+            const [dbInstance, setDbInstance] = useState(null);
+            const [authInstance, setAuthInstance] = useState(null);
+
+            // --- Auth & DB Initialization ---
             useEffect(() => {
-                const initAuth = async () => {
-                    try {
-                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                            await signInWithCustomToken(auth, __initial_auth_token);
-                        } else {
-                            await signInAnonymously(auth);
+                if (!config) {
+                    setError("Firebaseの設定が見つかりません。設定を確認してください。");
+                    setLoading(false);
+                    return;
+                }
+
+                try {
+                    const appInstance = initializeApp(config);
+                    const authInst = getAuth(appInstance);
+                    const dbInst = getFirestore(appInstance);
+                    setAuthInstance(authInst);
+                    setDbInstance(dbInst);
+
+                    const initAuth = async () => {
+                        try {
+                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                                await signInWithCustomToken(authInst, __initial_auth_token);
+                            } else {
+                                await signInAnonymously(authInst);
+                            }
+                        } catch (err) {
+                            console.error("Auth error:", err);
+                            setError("認証に失敗しました。");
                         }
-                    } catch (err) {
-                        setError("認証に失敗しました。");
-                    }
-                };
-                initAuth();
-                const unsubscribe = onAuthStateChanged(auth, (u) => {
-                    setUser(u);
-                    if (!u) setLoading(false);
-                });
-                return () => unsubscribe();
+                    };
+                    initAuth();
+                    const unsubscribe = onAuthStateChanged(authInst, (u) => {
+                        setUser(u);
+                        if (!u) setLoading(false);
+                    });
+                    return () => unsubscribe();
+                } catch (e) {
+                    setError("初期化中にエラーが発生しました。");
+                    setLoading(false);
+                }
             }, []);
 
             // --- Data Fetching ---
             useEffect(() => {
-                if (!user) return;
-                const settingsDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'config');
+                if (!user || !dbInstance) return;
+                const settingsDocRef = doc(dbInstance, 'artifacts', appId, 'users', user.uid, 'settings', 'config');
                 const unsubSettings = onSnapshot(settingsDocRef, (docSnap) => {
                     if (docSnap.exists()) {
                         const data = docSnap.data();
@@ -155,14 +198,14 @@
                     }
                     setLoading(false);
                 });
-                const itemsColRef = collection(db, 'artifacts', appId, 'users', user.uid, 'items');
+                const itemsColRef = collection(dbInstance, 'artifacts', appId, 'users', user.uid, 'items');
                 const unsubItems = onSnapshot(itemsColRef, (snapshot) => {
                     setItems(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
                 });
                 return () => { unsubSettings(); unsubItems(); };
-            }, [user]);
+            }, [user, dbInstance]);
 
-            // --- Notification Logic (2-month threshold) ---
+            // --- Notification Logic ---
             const alertItems = useMemo(() => {
                 const now = new Date();
                 return items.filter(item => {
@@ -177,13 +220,15 @@
             useEffect(() => {
                 if (isAuthenticated && alertItems.length > 0 && notifPermission === 'granted') {
                     alertItems.forEach((item, index) => {
-                        if (index >= 5) return;
+                        if (index >= 3) return; // モバイルでの過剰な通知防止
                         const date = item.checkDate || item.expiryDate;
                         const isOverdue = new Date(date) < new Date();
                         const body = isOverdue 
                             ? `${item.name} の期限が ${date} に切れています。`
                             : `${item.name} が ${date} に期限を迎えます。`;
-                        new Notification(isOverdue ? "【期限切れ】アラート" : "【期限間近】アラート", { body });
+                        try {
+                            new Notification(isOverdue ? "【期限切れ】アラート" : "【期限間近】アラート", { body });
+                        } catch(e) { console.warn("Notification not supported or failed."); }
                     });
                 }
             }, [isAuthenticated, alertItems, notifPermission]);
@@ -210,8 +255,8 @@
                     updatedAt: new Date().toISOString()
                 };
                 try {
-                    if (currentItem?.id) await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'items', currentItem.id), data);
-                    else await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'items'), data);
+                    if (currentItem?.id) await updateDoc(doc(dbInstance, 'artifacts', appId, 'users', user.uid, 'items', currentItem.id), data);
+                    else await addDoc(collection(dbInstance, 'artifacts', appId, 'users', user.uid, 'items'), data);
                     setView('list'); setCurrentItem(null);
                 } catch (err) { setError("保存失敗"); }
             };
@@ -224,7 +269,18 @@
                 return 'text-emerald-600 bg-emerald-50 ring-emerald-200';
             };
 
-            if (loading) return <div className="min-h-screen flex items-center justify-center"><div className="animate-spin rounded-full h-12 w-12 border-t-2 border-blue-600"></div></div>;
+            if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><div className="animate-spin rounded-full h-12 w-12 border-t-2 border-blue-600"></div></div>;
+
+            if (error && !isAuthenticated) return (
+                <div className="min-h-screen flex items-center justify-center p-4 bg-slate-50">
+                    <div className="bg-white p-6 rounded-xl shadow-lg border border-red-200 text-center max-w-sm">
+                        <Icon name="alert" className="mx-auto text-red-500 mb-4" />
+                        <h2 className="text-lg font-bold text-slate-800 mb-2">エラー</h2>
+                        <p className="text-slate-600 text-sm mb-4">{error}</p>
+                        <button onClick={() => location.reload()} className="bg-slate-100 px-4 py-2 rounded-lg text-sm font-bold">再読み込み</button>
+                    </div>
+                </div>
+            );
 
             if (!isAuthenticated) return (
                 <div className="min-h-screen flex items-center justify-center p-4">
@@ -236,7 +292,7 @@
                         </div>
                         <form onSubmit={isSettingPassword ? (async (e) => {
                             e.preventDefault();
-                            await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'config'), { password, categories }, { merge: true });
+                            await setDoc(doc(dbInstance, 'artifacts', appId, 'users', user.uid, 'settings', 'config'), { password, categories }, { merge: true });
                             setIsAuthenticated(true);
                         }) : handleLogin} className="space-y-4">
                             <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full px-4 py-3 rounded-lg border focus:ring-2 focus:ring-blue-500 outline-none" placeholder="パスワード" required />
@@ -261,8 +317,8 @@
                     <main className="max-w-4xl mx-auto px-4 py-6">
                         {alertItems.length > 0 && (
                             <div className="mb-6 bg-red-50 border border-red-100 p-4 rounded-2xl flex items-center gap-3 animate-pulse">
-                                <Icon name="alert" className="text-red-500" />
-                                <div><p className="text-red-800 font-bold">期限切れ・間近が {alertItems.length} 件あります</p></div>
+                                <Icon name="alert" className="text-red-500 flex-shrink-0" />
+                                <div><p className="text-red-800 font-bold text-sm">期限切れ・間近が {alertItems.length} 件あります</p></div>
                             </div>
                         )}
 
@@ -278,25 +334,25 @@
                                     if (catItems.length === 0) return null;
                                     return (
                                         <section key={cat} className="space-y-3">
-                                            <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest">{cat}</h2>
+                                            <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest px-1">{cat}</h2>
                                             <div className="grid gap-3">
                                                 {catItems.map(item => (
-                                                    <div key={item.id} className="bg-white p-4 rounded-xl shadow-sm border group">
+                                                    <div key={item.id} className="bg-white p-4 rounded-xl shadow-sm border group active:bg-slate-50 transition-colors">
                                                         <div className="flex justify-between items-start">
                                                             <div>
                                                                 <div className="flex items-center gap-2">
-                                                                    <h3 className="font-bold text-lg">{item.name}</h3>
-                                                                    <span className="bg-slate-100 text-xs px-2 py-0.5 rounded-full">x {item.quantity}</span>
+                                                                    <h3 className="font-bold text-slate-800">{item.name}</h3>
+                                                                    <span className="bg-slate-100 text-slate-500 text-[10px] px-2 py-0.5 rounded-full">x {item.quantity}</span>
                                                                 </div>
-                                                                <div className="mt-3 flex flex-wrap gap-4 text-[10px] text-slate-500">
+                                                                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[10px] text-slate-500">
                                                                     <span className="flex items-center gap-1"><Icon name="calendar" className="w-3 h-3" />入手: {item.replacementDate || '-'}</span>
                                                                     <span className={`flex items-center gap-1 font-bold ${getStatusColor(item.expiryDate)}`}><Icon name="alert" className="w-3 h-3" />賞味期限: {item.expiryDate || '-'}</span>
                                                                     <span className={`flex items-center gap-1 font-bold ${getStatusColor(item.checkDate)}`}><Icon name="check" className="w-3 h-3" />次回交換: {item.checkDate || '-'}</span>
                                                                 </div>
                                                             </div>
-                                                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                                <button onClick={() => { setCurrentItem(item); setView('edit'); }} className="text-blue-600 p-1"><Icon name="edit" className="w-4 h-4" /></button>
-                                                                <button onClick={async () => { if(confirm('削除しますか？')) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'items', item.id)) }} className="text-red-600 p-1"><Icon name="trash" className="w-4 h-4" /></button>
+                                                            <div className="flex gap-2">
+                                                                <button onClick={() => { setCurrentItem(item); setView('edit'); }} className="text-blue-600 p-2 bg-blue-50 rounded-lg"><Icon name="edit" className="w-4 h-4" /></button>
+                                                                <button onClick={async () => { if(confirm('削除しますか？')) await deleteDoc(doc(dbInstance, 'artifacts', appId, 'users', user.uid, 'items', item.id)) }} className="text-red-600 p-2 bg-red-50 rounded-lg"><Icon name="trash" className="w-4 h-4" /></button>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -309,23 +365,28 @@
                         )}
                     </main>
 
-                    <button onClick={() => setView('edit')} className="fixed bottom-8 right-8 w-16 h-16 bg-blue-600 text-white rounded-full shadow-2xl flex items-center justify-center hover:scale-105 transition-all"><Icon name="plus" /></button>
+                    <button onClick={() => setView('edit')} className="fixed bottom-8 right-8 w-16 h-16 bg-blue-600 text-white rounded-full shadow-2xl flex items-center justify-center active:scale-95 transition-all"><Icon name="plus" /></button>
 
                     {view === 'edit' && (
                         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-                            <div className="bg-white rounded-2xl w-full max-w-lg overflow-hidden">
-                                <div className="px-6 py-4 bg-slate-50 border-b flex justify-between items-center"><h2 className="font-bold">{currentItem ? '編集' : '追加'}</h2><button onClick={() => setView('list')}><Icon name="x" className="text-slate-400" /></button></div>
+                            <div className="bg-white rounded-2xl w-full max-w-lg overflow-hidden max-h-[90vh] overflow-y-auto">
+                                <div className="px-6 py-4 bg-slate-50 border-b flex justify-between items-center sticky top-0 bg-white z-10"><h2 className="font-bold">{currentItem ? '編集' : '追加'}</h2><button onClick={() => setView('list')}><Icon name="x" className="text-slate-400" /></button></div>
                                 <form onSubmit={saveItem} className="p-6 space-y-4">
+                                    <div><label className="text-xs font-bold text-slate-500">カテゴリ</label>
+                                        <select name="category" defaultValue={currentItem?.category || categories[0]} className="w-full p-2.5 border rounded-lg bg-white mt-1">
+                                            {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                                        </select>
+                                    </div>
                                     <div className="flex gap-4">
-                                        <div className="flex-[3]"><label className="text-xs font-bold text-slate-500">備品名</label><input name="name" defaultValue={currentItem?.name} className="w-full p-2 border rounded-lg" required /></div>
-                                        <div className="flex-[1]"><label className="text-xs font-bold text-slate-500">個数</label><input name="quantity" type="number" defaultValue={currentItem?.quantity || 1} className="w-full p-2 border rounded-lg" /></div>
+                                        <div className="flex-[3]"><label className="text-xs font-bold text-slate-500">備品名</label><input name="name" defaultValue={currentItem?.name} className="w-full p-2.5 border rounded-lg mt-1" placeholder="例: 保存水" required /></div>
+                                        <div className="flex-[1]"><label className="text-xs font-bold text-slate-500">個数</label><input name="quantity" type="number" defaultValue={currentItem?.quantity || 1} className="w-full p-2.5 border rounded-lg mt-1" /></div>
                                     </div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div><label className="text-xs font-bold text-slate-500">入手日</label><input name="replacementDate" type="date" defaultValue={currentItem?.replacementDate} className="w-full p-2 border rounded-lg" /></div>
-                                        <div><label className="text-xs font-bold text-slate-500">賞味期限 (YM)</label><input name="expiryDate" type="month" defaultValue={currentItem?.expiryDate} className="w-full p-2 border rounded-lg" /></div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div><label className="text-xs font-bold text-slate-500">入手日</label><input name="replacementDate" type="date" defaultValue={currentItem?.replacementDate} className="w-full p-2.5 border rounded-lg mt-1" /></div>
+                                        <div><label className="text-xs font-bold text-slate-500">賞味期限 (年月)</label><input name="expiryDate" type="month" defaultValue={currentItem?.expiryDate} className="w-full p-2.5 border rounded-lg mt-1" /></div>
                                     </div>
-                                    <div><label className="text-xs font-bold text-slate-500">次回交換時期目安 (YM)</label><input name="checkDate" type="month" defaultValue={currentItem?.checkDate} className="w-full p-2 border rounded-lg" /></div>
-                                    <div className="pt-4 flex gap-3"><button type="button" onClick={() => setView('list')} className="flex-1 py-2 border rounded-lg">キャンセル</button><button type="submit" className="flex-1 py-2 bg-blue-600 text-white font-bold rounded-lg">保存</button></div>
+                                    <div><label className="text-xs font-bold text-slate-500">次回交換時期目安 (年月)</label><input name="checkDate" type="month" defaultValue={currentItem?.checkDate} className="w-full p-2.5 border rounded-lg mt-1" /></div>
+                                    <div className="pt-4 flex gap-3 sticky bottom-0 bg-white pb-2"><button type="button" onClick={() => setView('list')} className="flex-1 py-3 border rounded-lg font-bold text-slate-600 bg-slate-50">キャンセル</button><button type="submit" className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-lg shadow-lg shadow-blue-200">保存</button></div>
                                 </form>
                             </div>
                         </div>
@@ -336,12 +397,13 @@
                             <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden">
                                 <div className="px-6 py-4 bg-slate-50 border-b flex justify-between items-center"><h2 className="font-bold">カテゴリ設定</h2><button onClick={() => setView('list')}><Icon name="x" className="text-slate-400" /></button></div>
                                 <div className="p-6">
-                                    <textarea id="catInput" defaultValue={categories.join('\n')} className="w-full h-48 p-3 border rounded-lg font-mono text-sm" />
+                                    <p className="text-xs text-slate-400 mb-2">1行に1つのカテゴリを入力してください。</p>
+                                    <textarea id="catInput" defaultValue={categories.join('\n')} className="w-full h-48 p-3 border rounded-lg font-mono text-sm outline-none focus:ring-2 focus:ring-blue-500" />
                                     <button onClick={async () => {
                                         const list = document.getElementById('catInput').value.split('\n').filter(s => s.trim());
-                                        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'config'), { categories: list }, { merge: true });
+                                        await setDoc(doc(dbInstance, 'artifacts', appId, 'users', user.uid, 'settings', 'config'), { categories: list }, { merge: true });
                                         setView('list');
-                                    }} className="w-full mt-4 bg-blue-600 text-white py-2 rounded-lg font-bold">反映する</button>
+                                    }} className="w-full mt-4 bg-blue-600 text-white py-3 rounded-lg font-bold shadow-lg shadow-blue-200">反映する</button>
                                 </div>
                             </div>
                         </div>
