@@ -7,7 +7,7 @@ import {
   setDoc, 
   onSnapshot, 
   updateDoc, 
-  deleteDoc,
+  deleteDoc, 
   addDoc
 } from 'firebase/firestore';
 import { 
@@ -118,26 +118,34 @@ const App = () => {
       const date = item.checkDate || item.expiryDate;
       if (!date) return false;
       const target = new Date(date);
+      // 2ヶ月以内（約60日）に期限が切れるものを対象に設定
       const diffMonth = (target.getFullYear() - now.getFullYear()) * 12 + (target.getMonth() - now.getMonth());
-      return diffMonth <= 1;
+      return diffMonth <= 2;
     });
   }, [items]);
 
   useEffect(() => {
     if (isAuthenticated && alertItems.length > 0 && notifPermission === 'granted') {
-      const overdue = alertItems.filter(i => new Date(i.checkDate || i.expiryDate) < new Date());
-      const imminent = alertItems.filter(i => new Date(i.checkDate || i.expiryDate) >= new Date());
-      
-      let message = "";
-      if (overdue.length > 0) message += `期限切れが${overdue.length}件あります。`;
-      if (imminent.length > 0) message += `間もなく交換時期のものが${imminent.length}件あります。`;
+      // 個別に詳細な通知を送信
+      alertItems.forEach((item, index) => {
+        // 短時間に大量の通知が飛ばないよう、最大5件程度に制限（ブラウザの制限対策）
+        if (index >= 5) return;
 
-      new Notification("防災備品アラート", {
-        body: message,
-        icon: "https://cdn-icons-png.flaticon.com/512/564/564619.png"
+        const date = item.checkDate || item.expiryDate;
+        const isOverdue = new Date(date) < new Date();
+        
+        const title = isOverdue ? "【期限切れ】防災備品アラート" : "【期限間近】防災備品アラート";
+        const body = isOverdue 
+          ? `${item.name} の期限が ${date} に切れています。交換してください。`
+          : `${item.name} が ${date} に期限（交換時期）を迎えます。`;
+
+        new Notification(title, {
+          body: body,
+          icon: "https://cdn-icons-png.flaticon.com/512/564/564619.png"
+        });
       });
     }
-  }, [isAuthenticated, alertItems.length, notifPermission]);
+  }, [isAuthenticated, alertItems, notifPermission]);
 
   const requestNotificationPermission = async () => {
     const permission = await Notification.requestPermission();
@@ -315,7 +323,7 @@ const App = () => {
 
       {view === 'edit' && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-lg overflow-hidden">
             <div className="px-6 py-4 bg-slate-50 border-b flex justify-between items-center"><h2 className="text-xl font-bold">{currentItem ? '編集' : '追加'}</h2><button onClick={() => {setView('list'); setCurrentItem(null);}}><X className="w-6 h-6 text-slate-400" /></button></div>
             <form onSubmit={saveItem} className="p-6 space-y-4">
               <div><label className="block text-sm font-semibold mb-1">カテゴリ</label><select name="category" defaultValue={currentItem?.category || categories[0]} className="w-full p-2.5 bg-white border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500">{categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}</select></div>
