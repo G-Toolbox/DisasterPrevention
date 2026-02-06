@@ -34,14 +34,12 @@
 
         // --- Firebase Configuration ---
         const getFirebaseConfig = () => {
-            // 1. 環境変数からの読み込み用 (Canvas実行環境用)
             try {
                 if (typeof __firebase_config !== 'undefined' && __firebase_config) {
                     return JSON.parse(__firebase_config);
                 }
             } catch (e) {}
 
-            // 2. ★提供された設定情報をここに反映しました★
             const manualConfig = {
                 apiKey: "AIzaSyA5joqpMLgc10lPyNpCwVs3MRTsv0zu0SY",
                 authDomain: "disasterprevention-fbc4e.firebaseapp.com",
@@ -51,7 +49,6 @@
                 appId: "1:845383127029:web:4ad2b0f4d15b1773641abc"
             };
 
-            // 設定が入力されているかチェック
             if (manualConfig.apiKey && manualConfig.apiKey !== "") {
                 return manualConfig;
             }
@@ -151,7 +148,12 @@
             const [currentItem, setCurrentItem] = useState(null);
             const [loading, setLoading] = useState(true);
             const [error, setError] = useState(null);
-            const [notifPermission, setNotifPermission] = useState(Notification.permission);
+            
+            // iOS対策: Notificationの存在を確認してから初期化
+            const [notifPermission, setNotifPermission] = useState(
+                typeof Notification !== 'undefined' ? Notification.permission : 'denied'
+            );
+            
             const [dbInstance, setDbInstance] = useState(null);
 
             useEffect(() => {
@@ -214,12 +216,22 @@
             }, [items]);
 
             useEffect(() => {
-                if (isAuthenticated && alertItems.length > 0 && notifPermission === 'granted') {
+                // iOS対策: Notificationが存在する場合のみ通知を試みる
+                if (typeof Notification !== 'undefined' && isAuthenticated && alertItems.length > 0 && notifPermission === 'granted') {
                     alertItems.slice(0, 3).forEach(item => {
                         new Notification("防災備品アラート", { body: `${item.name}の期限が近づいています。` });
                     });
                 }
             }, [isAuthenticated, alertItems, notifPermission]);
+
+            const handleRequestPermission = async () => {
+                if (typeof Notification !== 'undefined') {
+                    const permission = await Notification.requestPermission();
+                    setNotifPermission(permission);
+                } else {
+                    alert("このデバイスはブラウザ通知をサポートしていません。iPhoneの場合は「ホーム画面に追加」してからお試しください。");
+                }
+            };
 
             if (loading) return <div className="h-screen flex items-center justify-center font-bold text-slate-400">読み込み中...</div>;
 
@@ -272,7 +284,11 @@
                             <h1 className="font-bold text-slate-800">防災備品リスト</h1>
                         </div>
                         <div className="flex items-center gap-2">
-                            <button onClick={() => Notification.requestPermission()} className="p-2 hover:bg-slate-50 rounded-full"><Icon name="bell" className="text-slate-400 w-5 h-5" /></button>
+                            {typeof Notification !== 'undefined' && (
+                                <button onClick={handleRequestPermission} className="p-2 hover:bg-slate-50 rounded-full">
+                                    <Icon name={notifPermission === 'granted' ? "bell" : "bellOff"} className="text-slate-400 w-5 h-5" />
+                                </button>
+                            )}
                             <button onClick={() => setView('categories')} className="p-2 hover:bg-slate-50 rounded-full"><Icon name="settings" className="text-slate-400 w-5 h-5" /></button>
                         </div>
                     </header>
