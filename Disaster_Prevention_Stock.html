@@ -1,0 +1,352 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  onSnapshot, 
+  updateDoc, 
+  deleteDoc,
+  addDoc
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  Plus, 
+  Settings, 
+  Trash2, 
+  Edit2, 
+  X, 
+  ShieldCheck, 
+  AlertTriangle, 
+  CheckCircle2,
+  Calendar,
+  Package,
+  LogOut,
+  Lock,
+  Bell,
+  BellOff,
+  Hash
+} from 'lucide-react';
+
+// --- Firebase Configuration ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'disaster-prep-app';
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [password, setPassword] = useState('');
+  const [savedPassword, setSavedPassword] = useState(null);
+  const [isSettingPassword, setIsSettingPassword] = useState(false);
+  
+  const [items, setItems] = useState([]);
+  const [categories, setCategories] = useState(['飲料水', '食料品', '衛生用品', '生活用品', '医療品']);
+  const [view, setView] = useState('list');
+  const [currentItem, setCurrentItem] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [notifPermission, setNotifPermission] = useState(Notification.permission);
+
+  // --- Auth Setup ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth error:", err);
+        setError("認証に失敗しました。");
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (!u) setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- Data Fetching ---
+  useEffect(() => {
+    if (!user) return;
+
+    const settingsDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'config');
+    const unsubSettings = onSnapshot(settingsDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.password) setSavedPassword(data.password);
+        if (data.categories) setCategories(data.categories);
+      } else {
+        setIsSettingPassword(true);
+      }
+      setLoading(false);
+    }, (err) => {
+      console.error("Settings fetch error:", err);
+      setLoading(false);
+    });
+
+    const itemsColRef = collection(db, 'artifacts', appId, 'users', user.uid, 'items');
+    const unsubItems = onSnapshot(itemsColRef, (snapshot) => {
+      const itemsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setItems(itemsData);
+    }, (err) => {
+      console.error("Items fetch error:", err);
+    });
+
+    return () => {
+      unsubSettings();
+      unsubItems();
+    };
+  }, [user]);
+
+  // --- Notification Logic ---
+  const alertItems = useMemo(() => {
+    const now = new Date();
+    return items.filter(item => {
+      const date = item.checkDate || item.expiryDate;
+      if (!date) return false;
+      const target = new Date(date);
+      const diffMonth = (target.getFullYear() - now.getFullYear()) * 12 + (target.getMonth() - now.getMonth());
+      return diffMonth <= 1;
+    });
+  }, [items]);
+
+  useEffect(() => {
+    if (isAuthenticated && alertItems.length > 0 && notifPermission === 'granted') {
+      const overdue = alertItems.filter(i => new Date(i.checkDate || i.expiryDate) < new Date());
+      const imminent = alertItems.filter(i => new Date(i.checkDate || i.expiryDate) >= new Date());
+      
+      let message = "";
+      if (overdue.length > 0) message += `期限切れが${overdue.length}件あります。`;
+      if (imminent.length > 0) message += `間もなく交換時期のものが${imminent.length}件あります。`;
+
+      new Notification("防災備品アラート", {
+        body: message,
+        icon: "https://cdn-icons-png.flaticon.com/512/564/564619.png"
+      });
+    }
+  }, [isAuthenticated, alertItems.length, notifPermission]);
+
+  const requestNotificationPermission = async () => {
+    const permission = await Notification.requestPermission();
+    setNotifPermission(permission);
+  };
+
+  // --- Handlers ---
+  const handleLogin = (e) => {
+    e.preventDefault();
+    if (password === savedPassword) {
+      setIsAuthenticated(true);
+      setError(null);
+    } else {
+      setError("パスワードが正しくありません。");
+    }
+  };
+
+  const saveSettings = async (updates) => {
+    try {
+      const settingsDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'config');
+      await setDoc(settingsDocRef, updates, { merge: true });
+    } catch (err) {
+      setError("設定の保存に失敗しました。");
+    }
+  };
+
+  const handleSetInitialPassword = async (e) => {
+    e.preventDefault();
+    if (password.length < 4) {
+      setError("パスワードは4文字以上で設定してください。");
+      return;
+    }
+    await saveSettings({ password, categories });
+    setIsAuthenticated(true);
+    setIsSettingPassword(false);
+    setError(null);
+  };
+
+  const saveItem = async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const itemData = {
+      category: formData.get('category'),
+      name: formData.get('name'),
+      quantity: formData.get('quantity') || "1",
+      replacementDate: formData.get('replacementDate'),
+      expiryDate: formData.get('expiryDate'),
+      checkDate: formData.get('checkDate'),
+      updatedAt: new Date().toISOString()
+    };
+
+    try {
+      if (currentItem && currentItem.id) {
+        const itemRef = doc(db, 'artifacts', appId, 'users', user.uid, 'items', currentItem.id);
+        await updateDoc(itemRef, itemData);
+      } else {
+        const itemsColRef = collection(db, 'artifacts', appId, 'users', user.uid, 'items');
+        await addDoc(itemsColRef, itemData);
+      }
+      setView('list');
+      setCurrentItem(null);
+    } catch (err) {
+      setError("保存に失敗しました。");
+    }
+  };
+
+  const deleteItem = async (id) => {
+    if (!confirm("本当に削除しますか？")) return;
+    try {
+      const itemRef = doc(db, 'artifacts', appId, 'users', user.uid, 'items', id);
+      await deleteDoc(itemRef);
+    } catch (err) {
+      setError("削除に失敗しました。");
+    }
+  };
+
+  const getStatusColor = (dateStr) => {
+    if (!dateStr) return 'text-slate-400';
+    const target = new Date(dateStr);
+    const now = new Date();
+    const diffMonth = (target.getFullYear() - now.getFullYear()) * 12 + (target.getMonth() - now.getMonth());
+    
+    if (diffMonth < 0) return 'text-red-600 bg-red-50 ring-red-200';
+    if (diffMonth <= 3) return 'text-amber-600 bg-amber-50 ring-amber-200';
+    return 'text-emerald-600 bg-emerald-50 ring-emerald-200';
+  };
+
+  // --- Renderers ---
+  if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-50"><div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-600"></div></div>;
+  if (!isAuthenticated) return <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4"><div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-slate-200"><div className="flex flex-col items-center mb-6"><div className="bg-blue-100 p-4 rounded-full mb-4"><Lock className="w-8 h-8 text-blue-600" /></div><h1 className="text-2xl font-bold text-slate-800">防災備品管理</h1><p className="text-slate-500 text-center mt-2">{isSettingPassword ? '初期パスワードを設定してください' : 'パスワードを入力してください'}</p></div><form onSubmit={isSettingPassword ? handleSetInitialPassword : handleLogin} className="space-y-4"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none transition-all" placeholder="パスワード" required autoFocus />{error && <p className="text-red-500 text-sm text-center font-medium">{error}</p>}<button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition-colors">{isSettingPassword ? '設定して開始' : 'ログイン'}</button></form></div></div>;
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 pb-24">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
+        <div className="max-w-4xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-6 h-6 text-blue-600" />
+            <h1 className="text-lg font-bold">防災備品リスト</h1>
+          </div>
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={requestNotificationPermission}
+              className={`p-2 rounded-full transition-colors ${notifPermission === 'granted' ? 'text-blue-600 hover:bg-blue-50' : 'text-slate-400 hover:bg-slate-100'}`}
+              title={notifPermission === 'granted' ? "通知は有効です" : "通知を有効にする"}
+            >
+              {notifPermission === 'granted' ? <Bell className="w-5 h-5" /> : <BellOff className="w-5 h-5" />}
+            </button>
+            <button onClick={() => setView('categories')} className="p-2 text-slate-500 hover:bg-slate-100 rounded-full transition-colors"><Settings className="w-5 h-5" /></button>
+            <button onClick={() => setIsAuthenticated(false)} className="p-2 text-slate-500 hover:bg-slate-100 rounded-full transition-colors"><LogOut className="w-5 h-5" /></button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-4xl mx-auto px-4 py-6">
+        {alertItems.length > 0 && (
+          <div className="mb-6 bg-red-50 border border-red-100 p-4 rounded-2xl flex items-center justify-between shadow-sm animate-pulse">
+            <div className="flex items-center gap-3">
+              <div className="bg-red-500 p-2 rounded-full text-white"><AlertTriangle className="w-5 h-5" /></div>
+              <div>
+                <p className="text-red-800 font-bold">期限切れ・間近の備品が {alertItems.length} 件あります</p>
+                <p className="text-red-600 text-xs">早めの入れ替えをおすすめします</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {items.length === 0 ? (
+          <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-200">
+            <Package className="w-16 h-16 text-slate-200 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-slate-600">備品がまだ登録されていません</h3>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            {categories.map(cat => {
+              const catItems = items.filter(i => i.category === cat);
+              if (catItems.length === 0) return null;
+              return (
+                <section key={cat} className="space-y-3">
+                  <h2 className="text-sm font-bold text-slate-400 uppercase tracking-widest px-1">{cat}</h2>
+                  <div className="grid gap-3">
+                    {catItems.map(item => (
+                      <div key={item.id} className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 hover:border-blue-200 transition-all group">
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-bold text-slate-800 text-lg">{item.name}</h3>
+                              {item.quantity && (
+                                <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded-full font-medium">
+                                  x {item.quantity}
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-4 text-xs">
+                              <span className="flex items-center gap-1 text-slate-500"><Calendar className="w-3 h-3" /> 入手: {item.replacementDate || '-'}</span>
+                              <span className={`flex items-center gap-1 font-bold ${getStatusColor(item.expiryDate)}`}><AlertTriangle className="w-3 h-3" /> 賞味期限: {item.expiryDate || '-'}</span>
+                              <span className={`flex items-center gap-1 font-bold ${getStatusColor(item.checkDate)}`}><CheckCircle2 className="w-3 h-3" /> 次回交換: {item.checkDate || '-'}</span>
+                            </div>
+                          </div>
+                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button onClick={() => {setCurrentItem(item); setView('edit');}} className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg"><Edit2 className="w-4 h-4" /></button>
+                            <button onClick={() => deleteItem(item.id)} className="p-2 text-red-600 hover:bg-red-50 rounded-lg"><Trash2 className="w-4 h-4" /></button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+        )}
+      </main>
+
+      <button onClick={() => setView('edit')} className="fixed bottom-8 right-8 w-16 h-16 bg-blue-600 text-white rounded-full shadow-2xl flex items-center justify-center hover:bg-blue-700 hover:scale-105 transition-all z-40"><Plus className="w-8 h-8" /></button>
+
+      {view === 'edit' && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+            <div className="px-6 py-4 bg-slate-50 border-b flex justify-between items-center"><h2 className="text-xl font-bold">{currentItem ? '編集' : '追加'}</h2><button onClick={() => {setView('list'); setCurrentItem(null);}}><X className="w-6 h-6 text-slate-400" /></button></div>
+            <form onSubmit={saveItem} className="p-6 space-y-4">
+              <div><label className="block text-sm font-semibold mb-1">カテゴリ</label><select name="category" defaultValue={currentItem?.category || categories[0]} className="w-full p-2.5 bg-white border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500">{categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}</select></div>
+              <div className="flex gap-4">
+                <div className="flex-[3]"><label className="block text-sm font-semibold mb-1">備品名</label><input name="name" type="text" defaultValue={currentItem?.name} className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500" placeholder="例: 保存水 2L" required /></div>
+                <div className="flex-[1]"><label className="block text-sm font-semibold mb-1">個数</label><input name="quantity" type="number" min="1" defaultValue={currentItem?.quantity || 1} className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500" /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div><label className="block text-sm font-semibold mb-1">交換日 (YMD)</label><input name="replacementDate" type="date" defaultValue={currentItem?.replacementDate} className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500" /></div>
+                <div><label className="block text-sm font-semibold mb-1">賞味期限 (YM)</label><input name="expiryDate" type="month" defaultValue={currentItem?.expiryDate} className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500" /></div>
+              </div>
+              <div><label className="block text-sm font-semibold mb-1">次回交換時期目安 (YM)</label><input name="checkDate" type="month" defaultValue={currentItem?.checkDate} className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:ring-2 focus:ring-blue-500" /></div>
+              <div className="pt-4 flex gap-3"><button type="button" onClick={() => {setView('list'); setCurrentItem(null);}} className="flex-1 py-2.5 border border-slate-300 rounded-lg">キャンセル</button><button type="submit" className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg font-bold">保存</button></div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {view === 'categories' && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="px-6 py-4 bg-slate-50 border-b flex justify-between items-center"><h2 className="text-xl font-bold">カテゴリ設定</h2><button onClick={() => setView('list')}><X className="w-6 h-6 text-slate-400" /></button></div>
+            <div className="p-6">
+              <textarea defaultValue={categories.join('\n')} id="catText" className="w-full h-64 p-4 border border-slate-300 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm" />
+              <div className="mt-6 flex gap-3"><button onClick={() => setView('list')} className="flex-1 py-2.5 border border-slate-300 rounded-lg">キャンセル</button><button onClick={() => { const list = document.getElementById('catText').value.split('\n').map(s => s.trim()).filter(s => s !== ''); saveSettings({ categories: list }); setView('list'); }} className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg font-bold">反映</button></div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default App;
